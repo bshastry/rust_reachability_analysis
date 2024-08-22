@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use serde_json::json;
 use std::fs;
 use std::path::Path;
 use syn::{Item, Visibility, ImplItem};
-use quote::ToTokens; // Correct import for ToTokens trait
+use quote::ToTokens;
 
 fn main() {
     let path = "../lighthouse"; // Change this to your codebase path
@@ -17,6 +18,9 @@ fn main() {
             println!("  {}:", item_type);
             for element in elements {
                 println!("    - {}: {}", element.get("name").unwrap(), element.get("type").unwrap());
+				if let Some(fields) = element.get("fields") {
+					println!("      fields: {}", fields);
+				}
             }
         }
     }
@@ -150,14 +154,26 @@ fn process_items(items: &[Item], file_items: &mut HashMap<String, Vec<HashMap<St
                 }
             }
             Item::Struct(item_struct) => {
-                if is_public(&item_struct.vis) {
-                    let mut element = HashMap::new();
-                    element.insert("type".to_string(), "Struct".to_string());
-                    element.insert("name".to_string(), item_struct.ident.to_string());
-                    file_items.entry("Struct".to_string()).or_insert_with(Vec::new).push(element);
-                }
-                process_items(&item_struct.fields.iter().map(|f| Item::Verbatim(f.to_token_stream())).collect::<Vec<_>>(), file_items);
-            }
+				if is_public(&item_struct.vis) {
+					let mut element = HashMap::new();
+					element.insert("type".to_string(), "Struct".to_string());
+					element.insert("name".to_string(), item_struct.ident.to_string());
+
+					let mut fields = HashMap::new();
+					for field in &item_struct.fields {
+						if is_public(&field.vis) {
+							if let Some(ident) = &field.ident {
+								let mut field_element = HashMap::new();
+								field_element.insert("type".to_string(), field.ty.to_token_stream().to_string());
+								field_element.insert("name".to_string(), ident.to_string());
+								fields.insert(ident.to_string(), field_element);
+							}
+						}
+					}
+                    element.insert("fields".to_string(), json!(fields).to_string());
+					file_items.entry("Struct".to_string()).or_insert_with(Vec::new).push(element);
+				}
+			}
             Item::Trait(item_trait) => {
                 if is_public(&item_trait.vis) {
                     let mut element = HashMap::new();
