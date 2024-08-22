@@ -225,18 +225,13 @@ fn is_public(vis: &Visibility) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::{self, File};
+    use std::fs::File;
     use std::io::Write;
-    use std::path::{Path, PathBuf};
-    use uuid::Uuid;
+    use std::path::Path;
+    use tempfile::TempDir;
 
-    fn setup_test_directory() -> PathBuf {
-        let test_dir = PathBuf::from(format!("test_dir_{}", Uuid::new_v4())); // Use the `v4` function instead of `new_v4`
-        if test_dir.exists() {
-            fs::remove_dir_all(&test_dir).unwrap();
-        }
-        fs::create_dir(&test_dir).unwrap();
-        test_dir
+    fn setup_test_directory() -> TempDir {
+        TempDir::new().unwrap()
     }
 
     fn create_test_file(dir: &Path, file_name: &str, content: &str) {
@@ -250,7 +245,7 @@ mod tests {
         let test_dir = setup_test_directory();
         let mut public_items = HashMap::new();
 
-        process_directory(&test_dir, &mut public_items);
+        process_directory(test_dir.path(), &mut public_items);
 
         assert!(public_items.is_empty());
     }
@@ -258,13 +253,13 @@ mod tests {
     #[test]
     fn test_process_directory_with_single_file() {
         let test_dir = setup_test_directory();
-        create_test_file(&test_dir, "lib.rs", "pub fn test_fn() {}");
+        create_test_file(test_dir.path(), "lib.rs", "pub fn test_fn() {}");
 
         let mut public_items = HashMap::new();
-        process_directory(&test_dir, &mut public_items);
+        process_directory(test_dir.path(), &mut public_items);
 
         assert_eq!(public_items.len(), 1);
-        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.display())).unwrap();
+        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.path().display())).unwrap();
         assert_eq!(file_items.get("Fn").unwrap().len(), 1);
         assert_eq!(file_items.get("Fn").unwrap()[0].get("name").unwrap(), "test_fn");
     }
@@ -272,13 +267,13 @@ mod tests {
     #[test]
     fn test_process_directory_with_nested_mod() {
         let test_dir = setup_test_directory();
-        create_test_file(&test_dir, "lib.rs", "pub mod nested { pub fn nested_fn() {} }");
+        create_test_file(test_dir.path(), "lib.rs", "pub mod nested { pub fn nested_fn() {} }");
 
         let mut public_items = HashMap::new();
-        process_directory(&test_dir, &mut public_items);
+        process_directory(test_dir.path(), &mut public_items);
 
         assert_eq!(public_items.len(), 1);
-        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.display())).unwrap();
+        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.path().display())).unwrap();
         assert_eq!(file_items.get("Mod").unwrap().len(), 1);
         assert_eq!(file_items.get("Mod").unwrap()[0].get("name").unwrap(), "nested");
         assert_eq!(file_items.get("Fn").unwrap().len(), 1);
@@ -288,13 +283,13 @@ mod tests {
     #[test]
     fn test_process_directory_with_enum() {
         let test_dir = setup_test_directory();
-        create_test_file(&test_dir, "lib.rs", "pub enum TestEnum { Variant1, Variant2 }");
+        create_test_file(test_dir.path(), "lib.rs", "pub enum TestEnum { Variant1, Variant2 }");
 
         let mut public_items = HashMap::new();
-        process_directory(&test_dir, &mut public_items);
+        process_directory(test_dir.path(), &mut public_items);
 
         assert_eq!(public_items.len(), 1);
-        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.display())).unwrap();
+        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.path().display())).unwrap();
         assert_eq!(file_items.get("Enum").unwrap().len(), 1);
         assert_eq!(file_items.get("Enum").unwrap()[0].get("name").unwrap(), "TestEnum");
     }
@@ -302,13 +297,13 @@ mod tests {
     #[test]
     fn test_process_directory_with_struct() {
         let test_dir = setup_test_directory();
-        create_test_file(&test_dir, "lib.rs", "pub struct TestStruct { pub field: i32 }");
+        create_test_file(test_dir.path(), "lib.rs", "pub struct TestStruct { pub field: i32 }");
 
         let mut public_items = HashMap::new();
-        process_directory(&test_dir, &mut public_items);
+        process_directory(test_dir.path(), &mut public_items);
 
         assert_eq!(public_items.len(), 1);
-        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.display())).unwrap();
+        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.path().display())).unwrap();
         assert_eq!(file_items.get("Struct").unwrap().len(), 1);
         assert_eq!(file_items.get("Struct").unwrap()[0].get("name").unwrap(), "TestStruct");
     }
@@ -316,13 +311,13 @@ mod tests {
     #[test]
     fn test_process_directory_with_trait() {
         let test_dir = setup_test_directory();
-        create_test_file(&test_dir, "lib.rs", "pub trait TestTrait { fn trait_fn(&self); }");
+        create_test_file(test_dir.path(), "lib.rs", "pub trait TestTrait { fn trait_fn(&self); }");
 
         let mut public_items = HashMap::new();
-        process_directory(&test_dir, &mut public_items);
+        process_directory(test_dir.path(), &mut public_items);
 
         assert_eq!(public_items.len(), 1);
-        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.display())).unwrap();
+        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.path().display())).unwrap();
         assert_eq!(file_items.get("Trait").unwrap().len(), 1);
         assert_eq!(file_items.get("Trait").unwrap()[0].get("name").unwrap(), "TestTrait");
         assert_eq!(file_items.get("TraitFn").unwrap().len(), 1);
@@ -332,13 +327,13 @@ mod tests {
     #[test]
     fn test_process_directory_with_impl() {
         let test_dir = setup_test_directory();
-        create_test_file(&test_dir, "lib.rs", "pub struct TestStruct; impl TestStruct { pub fn impl_fn() {} }");
+        create_test_file(test_dir.path(), "lib.rs", "pub struct TestStruct; impl TestStruct { pub fn impl_fn() {} }");
 
         let mut public_items = HashMap::new();
-        process_directory(&test_dir, &mut public_items);
+        process_directory(test_dir.path(), &mut public_items);
 
         assert_eq!(public_items.len(), 1);
-        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.display())).unwrap();
+        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.path().display())).unwrap();
         assert_eq!(file_items.get("Struct").unwrap().len(), 1);
         assert_eq!(file_items.get("Struct").unwrap()[0].get("name").unwrap(), "TestStruct");
         assert_eq!(file_items.get("ImplFn").unwrap().len(), 1);
@@ -348,13 +343,13 @@ mod tests {
     #[test]
     fn test_process_directory_with_use() {
         let test_dir = setup_test_directory();
-        create_test_file(&test_dir, "lib.rs", "pub use std::collections::HashMap;");
+        create_test_file(test_dir.path(), "lib.rs", "pub use std::collections::HashMap;");
 
         let mut public_items = HashMap::new();
-        process_directory(&test_dir, &mut public_items);
+        process_directory(test_dir.path(), &mut public_items);
 
         assert_eq!(public_items.len(), 1);
-        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.display())).unwrap();
+        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.path().display())).unwrap();
         assert_eq!(file_items.get("Use").unwrap().len(), 1);
         assert_eq!(file_items.get("Use").unwrap()[0].get("name").unwrap(), "std::collections::HashMap");
     }
@@ -362,13 +357,13 @@ mod tests {
     #[test]
     fn test_process_directory_with_macro() {
         let test_dir = setup_test_directory();
-        create_test_file(&test_dir, "lib.rs", "macro_rules! test_macro { () => { println!(\"Hello, world!\"); }; }");
+        create_test_file(test_dir.path(), "lib.rs", "macro_rules! test_macro { () => { println!(\"Hello, world!\"); }; }");
 
         let mut public_items = HashMap::new();
-        process_directory(&test_dir, &mut public_items);
+        process_directory(test_dir.path(), &mut public_items);
 
         assert_eq!(public_items.len(), 1);
-        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.display())).unwrap();
+        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.path().display())).unwrap();
         assert_eq!(file_items.get("Macro").unwrap().len(), 1);
         assert_eq!(file_items.get("Macro").unwrap()[0].get("name").unwrap(), "macro_rules");
     }
