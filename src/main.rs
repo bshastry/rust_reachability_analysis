@@ -55,13 +55,22 @@ fn process_directory(path: &Path, public_types: &mut Vec<String>, public_functio
                                                 }
                                             }
                                         }
+                                    } else {
+                                        // Handle inherent implementations
+                                        for item in item_impl.items {
+                                            if let ImplItem::Fn(method) = item {
+                                                if is_public(&method.vis) {
+                                                    public_functions.push(method.sig.ident.to_string());
+                                                }
+                                            }
+                                        }
                                     }
                                 }
-								Item::Type(item_type) => {
-									if is_public(&item_type.vis) {
-										public_types.push(item_type.ident.to_string());
-									}
-								}
+                                Item::Type(item_type) => {
+                                    if is_public(&item_type.vis) {
+                                        public_types.push(item_type.ident.to_string());
+                                    }
+                                }
                                 _ => {}
                             }
                         }
@@ -78,4 +87,90 @@ fn process_directory(path: &Path, public_types: &mut Vec<String>, public_functio
 
 fn is_public(vis: &Visibility) -> bool {
     matches!(vis, Visibility::Public(_))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+    use std::fs::File;
+    use std::io::Write;
+
+    #[test]
+    fn test_valid_rust_file() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test.rs");
+        let mut file = File::create(&file_path).unwrap();
+        writeln!(file, "pub struct TestStruct;").unwrap();
+
+        let mut public_types = Vec::new();
+        let mut public_functions = Vec::new();
+        process_directory(dir.path(), &mut public_types, &mut public_functions);
+
+        assert_eq!(public_types, vec!["TestStruct"]);
+        assert!(public_functions.is_empty());
+    }
+
+    #[test]
+    fn test_invalid_rust_file() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test.rs");
+        let mut file = File::create(&file_path).unwrap();
+        writeln!(file, "invalid rust code").unwrap();
+
+        let mut public_types = Vec::new();
+        let mut public_functions = Vec::new();
+        process_directory(dir.path(), &mut public_types, &mut public_functions);
+
+        assert!(public_types.is_empty());
+        assert!(public_functions.is_empty());
+    }
+
+    #[test]
+    fn test_recursive_directory() {
+        let dir = tempdir().unwrap();
+        let subdir = dir.path().join("subdir");
+        fs::create_dir(&subdir).unwrap();
+        let file_path = subdir.join("test.rs");
+        let mut file = File::create(&file_path).unwrap();
+        writeln!(file, "pub struct TestStruct;").unwrap();
+
+        let mut public_types = Vec::new();
+        let mut public_functions = Vec::new();
+        process_directory(dir.path(), &mut public_types, &mut public_functions);
+
+        assert_eq!(public_types, vec!["TestStruct"]);
+        assert!(public_functions.is_empty());
+    }
+
+    #[test]
+    fn test_visibility_check() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test.rs");
+        let mut file = File::create(&file_path).unwrap();
+        writeln!(file, "struct PrivateStruct;").unwrap();
+
+        let mut public_types = Vec::new();
+        let mut public_functions = Vec::new();
+        process_directory(dir.path(), &mut public_types, &mut public_functions);
+
+        assert_eq!(public_types, Vec::<String>::new(), "public_types is not empty: {:?}", public_types);
+        assert!(public_functions.is_empty());
+    }
+
+    #[test]
+    fn test_public_function() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test.rs");
+        let mut file = File::create(&file_path).unwrap();
+        writeln!(file, "pub trait TestTrait {{ fn test_method(); }}").unwrap();
+        writeln!(file, "impl TestTrait for TestStruct {{ pub fn test_method() {{}} }}").unwrap();
+
+        let mut public_types = Vec::new();
+        let mut public_functions = Vec::new();
+        process_directory(dir.path(), &mut public_types, &mut public_functions);
+
+        assert!(public_types.is_empty(), "public_types is not empty: {:?}", public_types);
+        assert_eq!(public_functions, vec!["TestTrait::test_method"]);
+    }
 }
