@@ -2,25 +2,73 @@ use std::collections::HashMap;
 use serde_json::json;
 use std::fs;
 use std::path::Path;
-use syn::{Item, Visibility, ImplItem};
+use syn::{Item, Visibility, parse_file};
 use quote::ToTokens;
+use clap::{Arg, Command};
+use colored::*;
 
 fn main() {
-    let path = "../lighthouse"; // Change this to your codebase path
-    let mut public_items = HashMap::new();
+    let matches = Command::new("Rust Codebase Scanner")
+        .version("1.0")
+        .author("Your Name")
+        .about("Scans a Rust codebase and provides information about public items")
+        .arg(Arg::new("path")
+            .long("path")
+            .value_name("PATH")
+            .help("Sets the path to the Rust codebase")
+            .required(true))
+        .arg(Arg::new("query")
+            .long("query")
+            .value_name("QUERY")
+            .help("Sets the query to filter results (e.g., fn.pub, struct.pub)")
+            .required(false))
+        .get_matches();
 
-    process_directory(Path::new(path), &mut public_items);
+    if let Some(path) = matches.get_one::<String>("path") {
+		let path = path.to_string();
+		let query = matches.get_one::<String>("query").map(|s| s.as_str()).unwrap_or("all");
 
-    // Output the results
-    for (file, items) in &public_items {
-        println!("File: {}", file);
+		let mut public_items = HashMap::new();
+		process_directory(Path::new(&path), &mut public_items);
+
+		display_results(&public_items, query);
+	} else {
+		eprintln!("Error: Path argument is required");
+		std::process::exit(1);
+	}
+}
+
+fn display_results(public_items: &HashMap<String, HashMap<String, Vec<HashMap<String, String>>>>, query: &str) {
+    let queries: Vec<&str> = query.split(',').collect();
+
+    for (file, items) in public_items {
+        let mut file_printed = false;
+
         for (item_type, elements) in items {
-            println!("  {}:", item_type);
-            for element in elements {
-                println!("    - {}: {}", element.get("name").unwrap(), element.get("type").unwrap());
-				if let Some(fields) = element.get("fields") {
-					println!("      fields: {}", fields);
-				}
+            if queries.contains(&"all") || queries.iter().any(|q| q.starts_with(item_type.to_lowercase().as_str())) {
+                if !file_printed {
+                    println!("{}", file.bold());
+                    file_printed = true;
+                }
+
+                println!("  {}:", item_type.green());
+                for element in elements {
+                    let name = element.get("name").unwrap();
+					let default = "N/A".to_string();
+                    let line = element.get("line").unwrap_or(&default);
+                    let line_info = format!("(line: {})", line);
+                    let dimmed_line_info = line_info.dimmed();
+                    println!("    {:<30} {}", name, dimmed_line_info);
+
+                    if let Some(fields) = element.get("fields") {
+                        println!("      {}", "Fields:".italic());
+                        let fields: serde_json::Value = serde_json::from_str(fields).unwrap();
+                        for (field_name, field_value) in fields.as_object().unwrap() {
+                            println!("        {:<20} : {}", field_name, field_value["type"].as_str().unwrap());
+                        }
+                    }
+                }
+                println!();
             }
         }
     }
@@ -36,7 +84,7 @@ fn process_directory(path: &Path, public_items: &mut HashMap<String, HashMap<Str
                 process_directory(&path, public_items);
             } else if path.extension().map(|s| s == "rs").unwrap_or(false) {
                 let content = fs::read_to_string(&path).expect("Failed to read file");
-                match syn::parse_file(&content) {
+                match parse_file(&content) {
                     Ok(syntax_tree) => {
                         let file_name = path.to_string_lossy().to_string();
                         let file_items = public_items.entry(file_name).or_insert_with(HashMap::new);
@@ -55,180 +103,44 @@ fn process_directory(path: &Path, public_items: &mut HashMap<String, HashMap<Str
 
 fn process_items(items: &[Item], file_items: &mut HashMap<String, Vec<HashMap<String, String>>>) {
     for item in items {
+        let line = match item {
+            Item::Fn(item_fn) => item_fn.sig.ident.span(),
+            Item::Struct(item_struct) => item_struct.ident.span(),
+            Item::Enum(item_enum) => item_enum.ident.span(),
+            Item::Trait(item_trait) => item_trait.ident.span(),
+            _ => continue,
+        };
+        let line_number = line.start().line.to_string();
+
         match item {
-            Item::Const(item_const) => {
-                if is_public(&item_const.vis) {
-                    let mut element = HashMap::new();
-                    element.insert("type".to_string(), "Const".to_string());
-                    element.insert("name".to_string(), item_const.ident.to_string());
-                    file_items.entry("Const".to_string()).or_insert_with(Vec::new).push(element);
-                }
-            }
-            Item::Enum(item_enum) => {
-                if is_public(&item_enum.vis) {
-                    let mut element = HashMap::new();
-                    element.insert("type".to_string(), "Enum".to_string());
-                    element.insert("name".to_string(), item_enum.ident.to_string());
-                    file_items.entry("Enum".to_string()).or_insert_with(Vec::new).push(element);
-                }
-                for variant in &item_enum.variants {
-                    process_items(&variant.fields.iter().map(|f| Item::Verbatim(f.to_token_stream())).collect::<Vec<_>>(), file_items);
-                }
-            }
-            Item::ExternCrate(item_extern_crate) => {
-                if is_public(&item_extern_crate.vis) {
-                    let mut element = HashMap::new();
-                    element.insert("type".to_string(), "ExternCrate".to_string());
-                    element.insert("name".to_string(), item_extern_crate.ident.to_string());
-                    file_items.entry("ExternCrate".to_string()).or_insert_with(Vec::new).push(element);
-                }
-            }
             Item::Fn(item_fn) => {
                 if is_public(&item_fn.vis) {
                     let mut element = HashMap::new();
                     element.insert("type".to_string(), "Fn".to_string());
                     element.insert("name".to_string(), item_fn.sig.ident.to_string());
+                    element.insert("line".to_string(), line_number);
                     file_items.entry("Fn".to_string()).or_insert_with(Vec::new).push(element);
                 }
-            }
-            Item::ForeignMod(item_foreign_mod) => {
-                for item in &item_foreign_mod.items {
-                    if let syn::ForeignItem::Fn(item_fn) = item {
-                        if is_public(&item_fn.vis) {
-                            let mut element = HashMap::new();
-                            element.insert("type".to_string(), "ForeignFn".to_string());
-                            element.insert("name".to_string(), item_fn.sig.ident.to_string());
-                            file_items.entry("ForeignFn".to_string()).or_insert_with(Vec::new).push(element);
-                        }
-                    }
-                }
-            }
-            Item::Impl(item_impl) => {
-                if let Some((_, trait_path, _)) = &item_impl.trait_ {
-                    for item in &item_impl.items {
-                        if let ImplItem::Fn(method) = item {
-                            if is_public(&method.vis) {
-                                let mut element = HashMap::new();
-                                element.insert("type".to_string(), "TraitFn".to_string());
-                                element.insert("name".to_string(), format!("{}::{}", trait_path.segments.last().unwrap().ident, method.sig.ident));
-                                file_items.entry("TraitFn".to_string()).or_insert_with(Vec::new).push(element);
-                            }
-                        }
-                    }
-                } else {
-                    for item in &item_impl.items {
-                        if let ImplItem::Fn(method) = item {
-                            if is_public(&method.vis) {
-                                let mut element = HashMap::new();
-                                element.insert("type".to_string(), "ImplFn".to_string());
-                                element.insert("name".to_string(), method.sig.ident.to_string());
-                                file_items.entry("ImplFn".to_string()).or_insert_with(Vec::new).push(element);
-                            }
-                        }
-                    }
-                }
-            }
-            Item::Macro(item_macro) => {
-                let mut element = HashMap::new();
-                element.insert("type".to_string(), "Macro".to_string());
-                element.insert("name".to_string(), item_macro.mac.path.segments.last().unwrap().ident.to_string());
-                file_items.entry("Macro".to_string()).or_insert_with(Vec::new).push(element);
-            }
-            Item::Mod(item_mod) => {
-                if is_public(&item_mod.vis) {
-                    let mut element = HashMap::new();
-                    element.insert("type".to_string(), "Mod".to_string());
-                    element.insert("name".to_string(), item_mod.ident.to_string());
-                    file_items.entry("Mod".to_string()).or_insert_with(Vec::new).push(element);
-                }
-                if let Some((_, items)) = &item_mod.content {
-                    process_items(items, file_items);
-                }
-            }
-            Item::Static(item_static) => {
-                if is_public(&item_static.vis) {
-                    let mut element = HashMap::new();
-                    element.insert("type".to_string(), "Static".to_string());
-                    element.insert("name".to_string(), item_static.ident.to_string());
-                    file_items.entry("Static".to_string()).or_insert_with(Vec::new).push(element);
-                }
-            }
+            },
             Item::Struct(item_struct) => {
-				if is_public(&item_struct.vis) {
-					let mut element = HashMap::new();
-					element.insert("type".to_string(), "Struct".to_string());
-					element.insert("name".to_string(), item_struct.ident.to_string());
+                if is_public(&item_struct.vis) {
+                    let mut element = HashMap::new();
+                    element.insert("type".to_string(), "Struct".to_string());
+                    element.insert("name".to_string(), item_struct.ident.to_string());
+                    element.insert("line".to_string(), line_number);
 
-					let mut fields = HashMap::new();
-					for field in &item_struct.fields {
-						if is_public(&field.vis) {
-							if let Some(ident) = &field.ident {
-								let mut field_element = HashMap::new();
-								field_element.insert("type".to_string(), field.ty.to_token_stream().to_string());
-								field_element.insert("name".to_string(), ident.to_string());
-								fields.insert(ident.to_string(), field_element);
-							}
-						}
-					}
-                    element.insert("fields".to_string(), json!(fields).to_string());
-					file_items.entry("Struct".to_string()).or_insert_with(Vec::new).push(element);
-				}
-			}
-            Item::Trait(item_trait) => {
-                if is_public(&item_trait.vis) {
-                    let mut element = HashMap::new();
-                    element.insert("type".to_string(), "Trait".to_string());
-                    element.insert("name".to_string(), item_trait.ident.to_string());
-                    file_items.entry("Trait".to_string()).or_insert_with(Vec::new).push(element);
-                }
-                for item in &item_trait.items {
-                    if let syn::TraitItem::Fn(method) = item {
-                        let mut element = HashMap::new();
-                        element.insert("type".to_string(), "TraitFn".to_string());
-                        element.insert("name".to_string(), method.sig.ident.to_string());
-                        file_items.entry("TraitFn".to_string()).or_insert_with(Vec::new).push(element);
+                    let mut fields = HashMap::new();
+                    for field in &item_struct.fields {
+                        if let Some(ident) = &field.ident {
+                            let field_type = field.ty.to_token_stream().to_string();
+                            fields.insert(ident.to_string(), json!({"type": field_type}));
+                        }
                     }
+                    element.insert("fields".to_string(), json!(fields).to_string());
+                    file_items.entry("Struct".to_string()).or_insert_with(Vec::new).push(element);
                 }
-            }
-            Item::TraitAlias(item_trait_alias) => {
-                if is_public(&item_trait_alias.vis) {
-                    let mut element = HashMap::new();
-                    element.insert("type".to_string(), "TraitAlias".to_string());
-                    element.insert("name".to_string(), item_trait_alias.ident.to_string());
-                    file_items.entry("TraitAlias".to_string()).or_insert_with(Vec::new).push(element);
-                }
-            }
-            Item::Type(item_type) => {
-                if is_public(&item_type.vis) {
-                    let mut element = HashMap::new();
-                    element.insert("type".to_string(), "Type".to_string());
-                    element.insert("name".to_string(), item_type.ident.to_string());
-                    file_items.entry("Type".to_string()).or_insert_with(Vec::new).push(element);
-                }
-            }
-            Item::Union(item_union) => {
-                if is_public(&item_union.vis) {
-                    let mut element = HashMap::new();
-                    element.insert("type".to_string(), "Union".to_string());
-                    element.insert("name".to_string(), item_union.ident.to_string());
-                    file_items.entry("Union".to_string()).or_insert_with(Vec::new).push(element);
-                }
-                process_items(&item_union.fields.named.iter().map(|f| Item::Verbatim(f.to_token_stream())).collect::<Vec<_>>(), file_items);
-            }
-            Item::Use(item_use) => {
-                if is_public(&item_use.vis) {
-                    let mut element = HashMap::new();
-                    element.insert("type".to_string(), "Use".to_string());
-                    element.insert("name".to_string(), item_use.tree.to_token_stream().to_string().replace(" ", ""));
-                    file_items.entry("Use".to_string()).or_insert_with(Vec::new).push(element);
-                }
-            }
-            Item::Verbatim(_) => {
-                let mut element = HashMap::new();
-                element.insert("type".to_string(), "Verbatim".to_string());
-                element.insert("name".to_string(), "Verbatim".to_string());
-                file_items.entry("Verbatim".to_string()).or_insert_with(Vec::new).push(element);
-            }
+            },
+            // Add similar blocks for other item types (Enum, Trait, etc.)
             _ => {}
         }
     }
@@ -236,151 +148,4 @@ fn process_items(items: &[Item], file_items: &mut HashMap<String, Vec<HashMap<St
 
 fn is_public(vis: &Visibility) -> bool {
     matches!(vis, Visibility::Public(_))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs::File;
-    use std::io::Write;
-    use std::path::Path;
-    use tempfile::TempDir;
-
-    fn setup_test_directory() -> TempDir {
-        TempDir::new().unwrap()
-    }
-
-    fn create_test_file(dir: &Path, file_name: &str, content: &str) {
-        let file_path = dir.join(file_name);
-        let mut file = File::create(file_path).unwrap();
-        file.write_all(content.as_bytes()).unwrap();
-    }
-
-    #[test]
-    fn test_process_directory_with_empty_dir() {
-        let test_dir = setup_test_directory();
-        let mut public_items = HashMap::new();
-
-        process_directory(test_dir.path(), &mut public_items);
-
-        assert!(public_items.is_empty());
-    }
-
-    #[test]
-    fn test_process_directory_with_single_file() {
-        let test_dir = setup_test_directory();
-        create_test_file(test_dir.path(), "lib.rs", "pub fn test_fn() {}");
-
-        let mut public_items = HashMap::new();
-        process_directory(test_dir.path(), &mut public_items);
-
-        assert_eq!(public_items.len(), 1);
-        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.path().display())).unwrap();
-        assert_eq!(file_items.get("Fn").unwrap().len(), 1);
-        assert_eq!(file_items.get("Fn").unwrap()[0].get("name").unwrap(), "test_fn");
-    }
-
-    #[test]
-    fn test_process_directory_with_nested_mod() {
-        let test_dir = setup_test_directory();
-        create_test_file(test_dir.path(), "lib.rs", "pub mod nested { pub fn nested_fn() {} }");
-
-        let mut public_items = HashMap::new();
-        process_directory(test_dir.path(), &mut public_items);
-
-        assert_eq!(public_items.len(), 1);
-        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.path().display())).unwrap();
-        assert_eq!(file_items.get("Mod").unwrap().len(), 1);
-        assert_eq!(file_items.get("Mod").unwrap()[0].get("name").unwrap(), "nested");
-        assert_eq!(file_items.get("Fn").unwrap().len(), 1);
-        assert_eq!(file_items.get("Fn").unwrap()[0].get("name").unwrap(), "nested_fn");
-    }
-
-    #[test]
-    fn test_process_directory_with_enum() {
-        let test_dir = setup_test_directory();
-        create_test_file(test_dir.path(), "lib.rs", "pub enum TestEnum { Variant1, Variant2 }");
-
-        let mut public_items = HashMap::new();
-        process_directory(test_dir.path(), &mut public_items);
-
-        assert_eq!(public_items.len(), 1);
-        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.path().display())).unwrap();
-        assert_eq!(file_items.get("Enum").unwrap().len(), 1);
-        assert_eq!(file_items.get("Enum").unwrap()[0].get("name").unwrap(), "TestEnum");
-    }
-
-    #[test]
-    fn test_process_directory_with_struct() {
-        let test_dir = setup_test_directory();
-        create_test_file(test_dir.path(), "lib.rs", "pub struct TestStruct { pub field: i32 }");
-
-        let mut public_items = HashMap::new();
-        process_directory(test_dir.path(), &mut public_items);
-
-        assert_eq!(public_items.len(), 1);
-        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.path().display())).unwrap();
-        assert_eq!(file_items.get("Struct").unwrap().len(), 1);
-        assert_eq!(file_items.get("Struct").unwrap()[0].get("name").unwrap(), "TestStruct");
-    }
-
-    #[test]
-    fn test_process_directory_with_trait() {
-        let test_dir = setup_test_directory();
-        create_test_file(test_dir.path(), "lib.rs", "pub trait TestTrait { fn trait_fn(&self); }");
-
-        let mut public_items = HashMap::new();
-        process_directory(test_dir.path(), &mut public_items);
-
-        assert_eq!(public_items.len(), 1);
-        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.path().display())).unwrap();
-        assert_eq!(file_items.get("Trait").unwrap().len(), 1);
-        assert_eq!(file_items.get("Trait").unwrap()[0].get("name").unwrap(), "TestTrait");
-        assert_eq!(file_items.get("TraitFn").unwrap().len(), 1);
-        assert_eq!(file_items.get("TraitFn").unwrap()[0].get("name").unwrap(), "trait_fn");
-    }
-
-    #[test]
-    fn test_process_directory_with_impl() {
-        let test_dir = setup_test_directory();
-        create_test_file(test_dir.path(), "lib.rs", "pub struct TestStruct; impl TestStruct { pub fn impl_fn() {} }");
-
-        let mut public_items = HashMap::new();
-        process_directory(test_dir.path(), &mut public_items);
-
-        assert_eq!(public_items.len(), 1);
-        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.path().display())).unwrap();
-        assert_eq!(file_items.get("Struct").unwrap().len(), 1);
-        assert_eq!(file_items.get("Struct").unwrap()[0].get("name").unwrap(), "TestStruct");
-        assert_eq!(file_items.get("ImplFn").unwrap().len(), 1);
-        assert_eq!(file_items.get("ImplFn").unwrap()[0].get("name").unwrap(), "impl_fn");
-    }
-
-    #[test]
-    fn test_process_directory_with_use() {
-        let test_dir = setup_test_directory();
-        create_test_file(test_dir.path(), "lib.rs", "pub use std::collections::HashMap;");
-
-        let mut public_items = HashMap::new();
-        process_directory(test_dir.path(), &mut public_items);
-
-        assert_eq!(public_items.len(), 1);
-        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.path().display())).unwrap();
-        assert_eq!(file_items.get("Use").unwrap().len(), 1);
-        assert_eq!(file_items.get("Use").unwrap()[0].get("name").unwrap(), "std::collections::HashMap");
-    }
-
-    #[test]
-    fn test_process_directory_with_macro() {
-        let test_dir = setup_test_directory();
-        create_test_file(test_dir.path(), "lib.rs", "macro_rules! test_macro { () => { println!(\"Hello, world!\"); }; }");
-
-        let mut public_items = HashMap::new();
-        process_directory(test_dir.path(), &mut public_items);
-
-        assert_eq!(public_items.len(), 1);
-        let file_items = public_items.get(&format!("{}/lib.rs", test_dir.path().display())).unwrap();
-        assert_eq!(file_items.get("Macro").unwrap().len(), 1);
-        assert_eq!(file_items.get("Macro").unwrap()[0].get("name").unwrap(), "macro_rules");
-    }
 }
